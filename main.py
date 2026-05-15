@@ -39,23 +39,8 @@ def parse_event(raw_event: Any, calendar_name: str) -> Dict[str, Any]:
         if component.name == "VEVENT":
             title = str(component.get("summary", "Sem título"))
 
-            start = component.get("dtstart")
-            end = component.get("dtend")
-            location = component.get("location")
-            description = component.get("description")
-            uid = component.get("uid")
-
-            start_value = start.dt if start else None
-            end_value = end.dt if end else None
-
             return {
-                "uid": str(uid) if uid else None,
-                "calendar": calendar_name,
-                "title": title,
-                "start": start_value.isoformat() if start_value else None,
-                "end": end_value.isoformat() if end_value else None,
-                "location": str(location) if location else None,
-                "description": str(description) if description else None,
+                "title": title
             }
 
     return {}
@@ -94,12 +79,16 @@ def list_events(
     principal = client.principal()
     calendars = principal.calendars()
 
-    start_date = datetime.now(timezone.utc)
+    start_date = datetime.now(timezone.utc) - timedelta(days=1)
     end_date = start_date + timedelta(days=days)
 
     events: List[Dict[str, Any]] = []
 
     for calendar in calendars:
+        # Busca somente no calendário Trabalho
+        if calendar.name.strip().lower() != "trabalho":
+            continue
+
         try:
             raw_events = calendar.date_search(
                 start=start_date,
@@ -113,19 +102,68 @@ def list_events(
                     events.append(event_data)
 
         except Exception as error:
-            events.append({
-                "calendar": calendar.name,
-                "error": str(error),
-            })
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "error": "Erro ao buscar eventos no calendário Trabalho",
+                    "details": str(error),
+                },
+            )
 
-    events = sorted(events, key=lambda item: item.get("start") or "")
+    events = sorted(events, key=lambda item: item.get("title") or "")
 
-    return JSONResponse(content={
+    return {
+        "calendar": "Trabalho",
+        "days": days,
+        "total_events": len(events),
+        "events": events,
+    }
+
+@app.get("/debug/events")
+def debug_events(days: int = 30):
+    client = get_caldav_client()
+    principal = client.principal()
+    calendars = principal.calendars()
+
+    start_date = datetime.now(timezone.utc) - timedelta(days=1)
+    end_date = datetime.now(timezone.utc) + timedelta(days=days)
+
+    debug_result = []
+
+    for calendar in calendars:
+        item = {
+            "calendar": calendar.name,
+            "url": str(calendar.url),
+            "found": 0,
+            "events": [],
+            "error": None,
+        }
+
+        try:
+            raw_events = calendar.date_search(
+                start=start_date,
+                end=end_date,
+                expand=True,
+            )
+
+            item["found"] = len(raw_events)
+
+            for raw_event in raw_events[:10]:
+                item["events"].append({
+                    "url": str(raw_event.url),
+                    "raw_preview": raw_event.data[:500],
+                })
+
+        except Exception as error:
+            item["error"] = str(error)
+
+        debug_result.append(item)
+
+    return {
         "period": {
             "start": start_date.isoformat(),
             "end": end_date.isoformat(),
             "days": days,
         },
-        "total_events": len(events),
-        "events": events,
-    })
+        "calendars": debug_result,
+    }
